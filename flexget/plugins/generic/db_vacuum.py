@@ -27,6 +27,6 @@ def on_cleanup(manager):
                 session.execute('VACUUM')
             except OperationalError as e:
                 # Does not work on python 3.6, github issue #1596
-                log.error('Could not execute VACUUM command: %s', e.args[0])
+                log.error('Could not execute VACUUM command: %s', e)
             else:
                 persistence['last_vacuum'] = datetime.now()
