@@ -61,9 +61,9 @@ class NPOWatchlist(object):
 
     csrf_token = None
 
-    def _strip_accents(self, s):
+    def _convert_plain(self, s):
         return ''.join(c for c in unicodedata.normalize('NFD', s)
-                       if unicodedata.category(c) != 'Mn')
+                       if not re.match('Mn|P[^cd]', unicodedata.category(c)))
 
     def _prefix_url(self, prefix, url):
         if ':' not in url:
@@ -76,21 +76,7 @@ class NPOWatchlist(object):
         days_ago_match = days_ago_regex.search(date_text)
         first_word = date_text.split(' ')[0].lower().strip()
 
-        if date_match:
-            day = int(date_match.group(1))
-            month = months.index(date_match.group(2)) + 1
-
-            year = date_match.group(3)
-            if year is None:
-                year = date.today().year
-            else:
-                year = int(year)
-
-            return date(year, month, day)
-        elif days_ago_match:
-            days_ago = int(days_ago_match.group(1))
-            return date.today() - timedelta(days=days_ago)
-        elif first_word in ['vandaag', 'vanochtend', 'vanmiddag', 'vanavond']:
+        if first_word in ['vandaag', 'vanochtend', 'vanmiddag', 'vanavond']:
             return date.today()
         elif first_word == 'gisteren':
             return date.today() - timedelta(days=1)
@@ -98,6 +84,18 @@ class NPOWatchlist(object):
             return date.today() - timedelta(days=2)
         elif first_word == 'kijk':
             return None
+        elif date_match:
+            day = int(date_match.group(1))
+            month = months.index(date_match.group(2)) + 1
+            year = date_match.group(3)
+            if year is None:
+                year = date.today().year
+            else:
+                year = int(year)
+            return date(year, month, day)
+        elif days_ago_match:
+            days_ago = int(days_ago_match.group(1))
+            return date.today() - timedelta(days=days_ago)
         else:
             log.error("Cannot understand date '%s'", date_text)
             return date.today()
@@ -154,7 +152,7 @@ class NPOWatchlist(object):
             e['url'] = self._prefix_url('https://mijn.npo.nl', url)
             e['title'] = title
             e['series_name'] = series_name
-            e['series_name_plain'] = self._strip_accents(series_name)
+            e['series_name_plain'] = self._convert_plain(series_name)
             e['series_date'] = entry_date
             e['series_id_type'] = 'date'
             e['description'] = listItem.find('p').text
@@ -167,24 +165,38 @@ class NPOWatchlist(object):
 
         return entries
 
-    def _get_series_episodes(self, task, config, series_name, series_url):
+    def _get_series_info(self, task, config, series_name, series_url):
+        log.info('Retrieving series info for %s', series_name)
+        response = task.requests.get(series_url)
+        page = get_soup(response.content)
+        tvseries = page.find('div', itemscope='itemscope', itemtype='http://schema.org/TVSeries')
+        series_info = Entry()  # create a stub to store the common values for all episodes of this series
+        series_info['npo_url'] = tvseries.find('a', itemprop='url')['href']
+        series_info['npo_name'] = tvseries.find('span', itemprop='name').contents[0]
+        series_info['npo_description'] = tvseries.find('span', itemprop='description').contents[0]
+        series_info['npo_language'] = tvseries.find('span', itemprop='inLanguage').contents[0]
+
+        return series_info
+
+
+    def _get_series_episodes(self, task, config, series_name, series_url, series_info):
         log.info('Retrieving new episodes for %s', series_name)
-        response = task.requests.get(series_url + '/search?category=broadcasts')
+        response = task.requests.get(series_url + '/search?media_type=broadcast')  # only shows full episodes
         page = get_soup(response.content)
 
         if page.find('div', class_='npo3-show-items'):
             log.debug('Parsing as npo3')
-            entries = self._parse_episodes_npo3(task, config, series_name, page)
+            entries = self._parse_episodes_npo3(task, config, series_name, page, series_info)
         else:
             log.debug('Parsing as std')
-            entries = self._parse_episodes_std(task, config, series_name, page)
+            entries = self._parse_episodes_std(task, config, series_name, page, series_info)
 
         if not entries:
             log.warning('No episodes found for %s', series_name)
 
         return entries
 
-    def _parse_episodes_npo3(self, task, config, series_name, page):
+    def _parse_episodes_npo3(self, task, config, series_name, page, series_info):
         max_age = config.get('max_episode_age_days')
 
         entries = list()
@@ -205,16 +217,21 @@ class NPOWatchlist(object):
             e['url'] = self._prefix_url('http://www.npo.nl', url)
             e['title'] = title
             e['series_name'] = series_name
-            e['series_name_plain'] = self._strip_accents(series_name)
+            e['series_name_plain'] = self._convert_plain(series_name)
             e['series_date'] = entry_date
             e['series_id_type'] = 'date'
             e['description'] = listItem.find('p').text
+            e['npo_url'] = series_info['npo_url']
+            e['npo_name'] = series_info['npo_name']
+            e['npo_description'] = series_info['npo_description']
+            e['npo_language'] = series_info['npo_language']
+            e['language'] = series_info['npo_language']  # set language field for (tvdb_)lookup
 
             entries.append(e)
 
         return entries
 
-    def _parse_episodes_std(self, task, config, series_name, page):
+    def _parse_episodes_std(self, task, config, series_name, page, series_info):
         max_age = config.get('max_episode_age_days')
 
         entries = list()
@@ -242,10 +259,15 @@ class NPOWatchlist(object):
             e['url'] = self._prefix_url('http://www.npo.nl', url)
             e['title'] = title
             e['series_name'] = series_name
-            e['series_name_plain'] = self._strip_accents(series_name)
+            e['series_name_plain'] = self._convert_plain(series_name)
             e['series_date'] = entry_date
             e['series_id_type'] = 'date'
             e['description'] = listItem.find('p').text
+            e['npo_url'] = series_info['npo_url']
+            e['npo_name'] = series_info['npo_name']
+            e['npo_description'] = series_info['npo_description']
+            e['npo_language'] = series_info['npo_language']
+            e['language'] = series_info['npo_language']  # set language field for (tvdb_)lookup
 
             entries.append(e)
 
@@ -283,7 +305,9 @@ class NPOWatchlist(object):
             elif (date.today() - last_aired) > timedelta(days=365 * 2):
                 log.info('Series %s last aired on %s', series_name, last_aired)
 
-            entries += self._get_series_episodes(task, config, series_name, url)
+            series_info = self._get_series_info(task, config, series_name, url)
+
+            entries += self._get_series_episodes(task, config, series_name, url, series_info)
 
         return entries
 
@@ -321,4 +345,4 @@ class NPOWatchlist(object):
 
 @event('plugin.register')
 def register_plugin():
-    plugin.register(NPOWatchlist, 'npo_watchlist', api_ver=2, groups=['list'])
+    plugin.register(NPOWatchlist, 'npo_watchlist', api_ver=2, interfaces=['task'])

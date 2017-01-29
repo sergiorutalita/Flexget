@@ -17,7 +17,7 @@ def plugins_summary(manager, options):
         disable_all_colors()
     header = ['Keyword', 'Phases', 'Flags']
     table_data = [header]
-    for plugin in sorted(get_plugins(phase=options.phase, group=options.group)):
+    for plugin in sorted(get_plugins(phase=options.phase, interface=options.interface)):
         if options.builtins and not plugin.builtin:
             continue
         flags = []
@@ -51,6 +51,6 @@ def plugins_summary(manager, options):
 def register_parser_arguments():
     parser = options.register_command('plugins', plugins_summary, help='Print registered plugin summaries',
                                       parents=[table_parser])
-    parser.add_argument('--group', help='Show plugins belonging to this group')
+    parser.add_argument('--interface', help='Show plugins belonging to this interface')
     parser.add_argument('--phase', help='Show plugins that act on this phase')
     parser.add_argument('--builtins', action='store_true', help='Show just builtin plugins')
